@@ -1,0 +1,9 @@
+Resource ID:
+    Day ahead resource ID: aec5601a-7f3e-4c4c-bf56-d8e4184d3c5b
+    National Demand: --
+
+Neso Demand available resources: https://www.neso.energy/search-data?f%5B0%5D=organization%3A48391
+Neso Daily demand available here: https://www.neso.energy/data-portal/daily-demand-update
+Neso historical demand available here: https://www.neso.energy/data-portal/historic-demand-data
+
+Neso transmission loss available here: https://www.neso.energy/data-portal/transmission-losses
