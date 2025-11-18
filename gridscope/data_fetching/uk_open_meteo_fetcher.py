@@ -88,33 +88,104 @@ class OpenMeteoFetcherUk:
         df["datetime"] = pd.to_datetime(df["datetime"])
         return df.set_index("datetime").sort_index()
 
-    # ----------------------------------------------------------------
-    # Main fetcher for all sites
-    # ----------------------------------------------------------------
     def build_weather_dataset(self, interpolate_to_30min: bool = True) -> pd.DataFrame:
         all_dfs = []
 
-        # Demand temperature sites
+        # ===============================================================
+        # Demand temperature sites (major cities)
+        # ESSENTIAL VARIABLES:
+        # - temperature_2m (°C)
+        # - relative_humidity_2m (%)
+        # - precipitation (mm)
+        # ===============================================================
         for i, (lat, lon) in enumerate(self.DEMAND_TEMP_SITES, start=1):
-            df_temp = self.fetch_openmeteo_hourly(lat, lon, ["temperature_2m"])
-            df_temp = df_temp.rename(columns={"temperature_2m": f"temp_site{i}"})
+            df_temp = self.fetch_openmeteo_hourly(
+                lat,
+                lon,
+                [
+                    "temperature_2m",  # ESSENTIAL: demand driver
+                    "relative_humidity_2m",  # ESSENTIAL: complements temperature
+                    "precipitation",  # ESSENTIAL: cold/rainy regime proxy
+                    "dew_point_2m",
+                    "pressure_msl",
+                    "cloud_cover",
+                ],
+            )
+            df_temp = df_temp.rename(
+                columns={
+                    "temperature_2m": f"temp_site{i}",
+                    "relative_humidity_2m": f"humidity_site{i}",
+                    "precipitation": f"precip_site{i}",
+                    "dew_point_2m": f"dewpoint_site{i}",
+                    "pressure_msl": f"pressure_site{i}",
+                    "cloud_cover": f"cloud_site{i}",
+                }
+            )
             all_dfs.append(df_temp)
 
-        # Wind sites
+        # ===============================================================
+        # Wind sites (offshore + onshore)
+        # ESSENTIAL VARIABLES:
+        # - wind_speed_100m (m/s)
+        # - wind_direction_100m (°)
+        # - pressure_msl (hPa)
+        # ===============================================================
         for i, (lat, lon) in enumerate(self.WIND_SITES, start=1):
-            df_wind = self.fetch_openmeteo_hourly(lat, lon, ["wind_speed_100m"])
-            df_wind = df_wind.rename(columns={"wind_speed_100m": f"wind_site{i}"})
+            df_wind = self.fetch_openmeteo_hourly(
+                lat,
+                lon,
+                [
+                    "wind_speed_100m",  # ESSENTIAL: generation proxy
+                    "wind_direction_100m",  # ESSENTIAL: regional correlation
+                    "pressure_msl",  # ESSENTIAL: regime classifier
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "precipitation",
+                ],
+            )
+            df_wind = df_wind.rename(
+                columns={
+                    "wind_speed_100m": f"wind_speed_site{i}",
+                    "wind_direction_100m": f"wind_dir_site{i}",
+                    "pressure_msl": f"pressure_site{i}",
+                    "temperature_2m": f"temp_site_wind{i}",
+                    "relative_humidity_2m": f"humidity_site_wind{i}",
+                    "precipitation": f"precip_site_wind{i}",
+                }
+            )
             all_dfs.append(df_wind)
 
-        # Solar sites
+        # ===============================================================
+        # Solar sites (southern UK)
+        # ESSENTIAL VARIABLES:
+        # - shortwave_radiation (W/m²)
+        # - cloud_cover (%)
+        # ===============================================================
         for i, (lat, lon) in enumerate(self.SOLAR_SITES, start=1):
-            df_solar = self.fetch_openmeteo_hourly(lat, lon, ["shortwave_radiation"])
+            df_solar = self.fetch_openmeteo_hourly(
+                lat,
+                lon,
+                [
+                    "shortwave_radiation",  # ESSENTIAL: solar irradiance proxy
+                    "cloud_cover",  # ESSENTIAL: PV generation dampening
+                    "pressure_msl",
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "precipitation",
+                ],
+            )
             df_solar = df_solar.rename(
-                columns={"shortwave_radiation": f"solar_site{i}"}
+                columns={
+                    "shortwave_radiation": f"solar_rad_site{i}",
+                    "cloud_cover": f"cloud_site_solar{i}",
+                    "pressure_msl": f"pressure_site_solar{i}",
+                    "temperature_2m": f"temp_site_solar{i}",
+                    "relative_humidity_2m": f"humidity_site_solar{i}",
+                    "precipitation": f"precip_site_solar{i}",
+                }
             )
             all_dfs.append(df_solar)
 
-        # Merge everything on datetime index
         df_all = pd.concat(all_dfs, axis=1)
 
         if interpolate_to_30min:
@@ -177,7 +248,7 @@ def main() -> int:
         fetcher.save_to_csv()
         print(features.head())
     else:
-        fetch_2019_2024(pause_time=1)
+        fetch_2019_2024(pause_time=61)
 
     return 0
 

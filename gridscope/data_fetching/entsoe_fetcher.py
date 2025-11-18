@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+from gridscope.api_keys import TOKEN_ENTSOE
 
 
 class EntsoeFetcher:
