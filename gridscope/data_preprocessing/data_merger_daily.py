@@ -1,12 +1,9 @@
 import pandas as pd
-import os
-from pathlib import Path
 import numpy as np
-
 from typing import List
 
 
-class DataMerger30Min:
+class DataMergerDaily:
     def __init__(
         self,
         uk_weather_csv_paths: List[str],
@@ -20,43 +17,44 @@ class DataMerger30Min:
         self.uk_gas_prices_csv_path = uk_gas_prices_csv_path
 
     # ---------------------------------------------------------
-    # 1) Load and concatenate multiple CSV files safely
+    # 1) Load and concatenate multiple CSV files
     # ---------------------------------------------------------
     def _load_concat(self, paths: List[str], parse_dates=None) -> pd.DataFrame:
         frames = []
         for p in paths:
             df = pd.read_csv(p, parse_dates=parse_dates, low_memory=False)
             frames.append(df)
-        df = pd.concat(frames, ignore_index=True)
-        return df
+        return pd.concat(frames, ignore_index=True)
 
     # ---------------------------------------------------------
-    # 2) Load Weather Data (already 30-minute resolution)
+    # 2) Weather → aggregate daily means
     # ---------------------------------------------------------
-    def load_weather(self) -> pd.DataFrame:
+    def load_weather_daily(self) -> pd.DataFrame:
         df = self._load_concat(self.uk_weather_csv_paths, parse_dates=["datetime"])
         df = df.rename(columns={"datetime": "timestamp"})
-        df = df.sort_values("timestamp")
-        return df
+        df["date"] = df["timestamp"].dt.date
+        df = df.drop(columns=["timestamp"])
+
+        # Daily average for all columns except the date
+        daily = df.groupby("date").mean(numeric_only=True)
+        daily.index = pd.to_datetime(daily.index)
+        return daily.reset_index().rename(columns={"date": "timestamp"})
 
     # ---------------------------------------------------------
-    # 3) Load NESO Demand Data (convert to 30-min timestamp)
+    # 3) NESO → convert SP to timestamp, then aggregate daily
     # ---------------------------------------------------------
-    def load_neso(self) -> pd.DataFrame:
+    def load_neso_daily(self) -> pd.DataFrame:
         df = self._load_concat(self.neso_demand_csv_paths)
 
-        # Standardize date format
         df["SETTLEMENT_DATE"] = pd.to_datetime(
             df["SETTLEMENT_DATE"], errors="coerce", format="%d-%b-%Y"
         )
-
-        # Convert settlement period → timestamp
-        # SP1 = 00:00–00:30, SP2 = 00:30–01:00 ... SP48 = 23:30–00:00
         df["timestamp"] = df["SETTLEMENT_DATE"] + pd.to_timedelta(
             (df["SETTLEMENT_PERIOD"] - 1) * 30, unit="m"
         )
+        df["date"] = df["timestamp"].dt.date
 
-        # Some cols missing before 2023 → fill with 0
+        # Fill missing columns as before
         required = [
             "ND",
             "TSD",
@@ -67,7 +65,7 @@ class DataMerger30Min:
             "EMBEDDED_SOLAR_CAPACITY",
             "NON_BM_STOR",
             "PUMP_STORAGE_PUMPING",
-            "SCOTTISH_TRANSFER",  # missing before 2023
+            "SCOTTISH_TRANSFER",
             "IFA_FLOW",
             "IFA2_FLOW",
             "BRITNED_FLOW",
@@ -83,63 +81,90 @@ class DataMerger30Min:
             if col not in df.columns:
                 df[col] = 0.0
 
-        return df[["timestamp"] + required].sort_values("timestamp")
+        # Daily aggregation rules
+        agg_rules = {
+            # Demand — take mean over the day
+            "ND": "mean",
+            "TSD": "mean",
+            "ENGLAND_WALES_DEMAND": "mean",
+            # Embedded gen/capacity — mean
+            "EMBEDDED_WIND_GENERATION": "mean",
+            "EMBEDDED_WIND_CAPACITY": "mean",
+            "EMBEDDED_SOLAR_GENERATION": "mean",
+            "EMBEDDED_SOLAR_CAPACITY": "mean",
+            # Storage — sum (energy)
+            "NON_BM_STOR": "sum",
+            "PUMP_STORAGE_PUMPING": "sum",
+            # Flows — sum across all periods
+            "SCOTTISH_TRANSFER": "sum",
+            "IFA_FLOW": "sum",
+            "IFA2_FLOW": "sum",
+            "BRITNED_FLOW": "sum",
+            "MOYLE_FLOW": "sum",
+            "EAST_WEST_FLOW": "sum",
+            "NEMO_FLOW": "sum",
+            "NSL_FLOW": "sum",
+            "ELECLINK_FLOW": "sum",
+            "VIKING_FLOW": "sum",
+            "GREENLINK_FLOW": "sum",
+        }
+
+        daily = df.groupby("date").agg(agg_rules)
+        daily.index = pd.to_datetime(daily.index)
+        return daily.reset_index().rename(columns={"date": "timestamp"})
 
     # ---------------------------------------------------------
-    # 4) Load Gas Imports (daily → 30-min forward fill)
+    # 4) Gas imports are already daily
     # ---------------------------------------------------------
-    def load_gas_imports(self) -> pd.DataFrame:
+    def load_gas_imports_daily(self) -> pd.DataFrame:
         df = self._load_concat(self.uk_gas_imports_csv_paths, parse_dates=["timestamp"])
         df = df.rename(columns={"UK_imports_MWh_hour": "gas_imports_MWh_daily"})
-        df = df.sort_values("timestamp")
-
-        # Convert daily rows to 30-min rows: forward-fill
-        idx = pd.date_range(df["timestamp"].min(), df["timestamp"].max(), freq="30min")
-        df = df.set_index("timestamp").reindex(idx, method="ffill")
-        df.index.name = "timestamp"
-        return df.reset_index()
+        df["timestamp"] = df["timestamp"].dt.date
+        df = df.groupby("timestamp").first().reset_index()
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        return df
 
     # ---------------------------------------------------------
-    # 5) Load Gas Price (already 30-min resolution interpolated)
+    # 5) Gas prices are daily
     # ---------------------------------------------------------
-    def load_gas_prices(self) -> pd.DataFrame:
+    def load_gas_prices_daily(self) -> pd.DataFrame:
         df = pd.read_csv(self.uk_gas_prices_csv_path, parse_dates=["date"])
-        df = df.rename(
-            columns={"date": "timestamp", "SAP_GBP_per_MWh": "gas_price_GBP_MWh"}
-        )
-        return df[["timestamp", "gas_price_GBP_MWh"]].sort_values("timestamp")
+        df = df.rename(columns={"date": "timestamp"})
+        df["timestamp"] = df["timestamp"].dt.date
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        return df[["timestamp", "SAP_p_per_kWh", "SAP_GBP_per_MWh"]]
 
     # ---------------------------------------------------------
-    # 6) Merge all into a single 30-min aligned dataframe
+    # 6) Merge all into a daily dataset
     # ---------------------------------------------------------
     def merge(self) -> pd.DataFrame:
-        print("Loading datasets...")
+        print("Loading daily datasets...")
 
-        weather = self.load_weather()
-        neso = self.load_neso()
-        gas_imports = self.load_gas_imports()
-        gas_prices = self.load_gas_prices()
+        weather = self.load_weather_daily()
+        neso = self.load_neso_daily()
+        gas_imports = self.load_gas_imports_daily()
+        gas_prices = self.load_gas_prices_daily()
 
-        # Build master timestamp index (30-min) for full range 2020–2024
-        start = pd.to_datetime("2020-01-01 00:00:00")
-        end = pd.to_datetime("2024-12-31 23:30:00")
-        idx = pd.date_range(start, end, freq="30min")
+        # Build full daily index
+        start = pd.to_datetime("2020-01-01")
+        end = pd.to_datetime("2024-12-31")
+        idx = pd.date_range(start, end, freq="D")
 
         base = pd.DataFrame({"timestamp": idx})
 
-        print("Merging weather...")
+        print("Merging weather daily...")
         base = base.merge(weather, on="timestamp", how="left")
 
-        print("Merging NESO demand...")
+        print("Merging NESO daily...")
         base = base.merge(neso, on="timestamp", how="left")
 
-        print("Merging gas imports...")
+        print("Merging gas imports daily...")
         base = base.merge(gas_imports, on="timestamp", how="left")
 
-        print("Merging gas prices...")
+        print("Merging gas prices daily...")
         base = base.merge(gas_prices, on="timestamp", how="left")
 
-        # Fill NaNs sensibly
+        # Forward-fill numeric columns
         numeric_cols = base.select_dtypes(include=[np.number]).columns
         base[numeric_cols] = base[numeric_cols].fillna(method="ffill")
 
@@ -147,12 +172,12 @@ class DataMerger30Min:
         return base
 
     # ---------------------------------------------------------
-    # 7) Save to CSV
+    # 7) Save
     # ---------------------------------------------------------
     def save(self, output_path: str):
         df = self.merge()
         df.to_csv(output_path, index=False)
-        print(f"Saved merged dataset - {output_path}")
+        print(f"Saved daily dataset → {output_path}")
 
 
 def main():
@@ -178,16 +203,16 @@ def main():
         "data/gas/uk_gas_imports_2023-01-01_2023-12-31.csv",
         "data/gas/uk_gas_imports_2024-01-01_2024-12-31.csv",
     ]
-    uk_gas_prices_csv_path = "data/gas/processed/sap_gas_30min.csv"
+    uk_gas_prices_csv_path = "data/gas/processed/sap_gas_daily.csv"
 
-    merger = DataMerger30Min(
-        uk_weather_csv_paths=uk_weather_csv_paths,
-        neso_demand_csv_paths=neso_demand_csv_paths,
-        uk_gas_imports_csv_paths=uk_gas_imports_csv_paths,
-        uk_gas_prices_csv_path=uk_gas_prices_csv_path,
+    merger = DataMergerDaily(
+        uk_weather_csv_paths,
+        neso_demand_csv_paths,
+        uk_gas_imports_csv_paths,
+        uk_gas_prices_csv_path,
     )
 
-    merger.save("data/full_datasets/full_uk_energy_30min_2020_2024.csv")
+    merger.save("data/full_datasets/full_uk_energy_daily_2020_2024.csv")
 
 
 if __name__ == "__main__":
